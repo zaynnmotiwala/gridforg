@@ -1,309 +1,347 @@
-# AI Horde Worker reGen
+# GridForge: Distributed GPU Worker for AI Image Generation
 
-Welcome to the [AI Horde](https://github.com/Haidra-Org/AI-Horde), a free and open decentralized platform for collaborative AI! The AI Horde enables people from around the world to contribute their GPU power to generate images, text, and more. By running a worker on your local machine, you can earn [kudos](https://github.com/Haidra-Org/haidra-assets/blob/main/docs/kudos.md) which give you priority when making your own requests to the horde.
+GridForge turns your GPU into a node on the **AI Horde**, a free, crowdsourced network for AI image generation. The worker fetches image-generation jobs from the network, runs them locally with Stable Diffusion, SDXL, Stable Cascade, or Flux models, runs safety checks on the results, and uploads them. In return you earn **kudos**, which give your own requests on the network higher priority.
 
-A worker is a piece of software that handles jobs from the AI Horde, such as generating an image from a text prompt. When your worker successfully completes a job, you are rewarded with kudos. The more kudos you have, the faster your own requests will be processed.
+---
 
-You can read about [kudos](https://github.com/Haidra-Org/haidra-assets/blob/main/docs/kudos.md), the reward granted to you for running a worker, including some reasons for running a worker on our [detailed kudos explanation](https://github.com/Haidra-Org/haidra-assets/blob/main/docs/kudos.md).
+## Table of Contents
 
-## Contents
+- [Key Features](#key-features)
+- [How It Works](#how-it-works)
+- [Tech Stack](#tech-stack)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Recommended Settings by GPU](#recommended-settings-by-gpu)
+- [Running the Worker](#running-the-worker)
+- [Updating](#updating)
+- [Custom Models](#custom-models)
+- [Docker](#docker)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-- [AI Horde Worker reGen](#ai-horde-worker-regen)
-  - [Contents](#contents)
-  - [Before You Begin](#before-you-begin)
-  - [Installation](#installation)
-    - [Windows](#windows)
-      - [Option 1: Using Git (Recommended)](#option-1-using-git-recommended)
-      - [Option 2: Without Git](#option-2-without-git)
-    - [Linux](#linux)
-    - [AMD GPUs](#amd-gpus)
-    - [DirectML](#directml)
-  - [Configuration](#configuration)
-    - [Basic Settings](#basic-settings)
-    - [Suggested Settings](#suggested-settings)
-    - [Important Notes](#important-notes)
-  - [Running the Worker](#running-the-worker)
-    - [Starting](#starting)
-    - [Stopping](#stopping)
-    - [Monitoring](#monitoring)
-    - [Multiple GPUs](#multiple-gpus)
-  - [Updating](#updating)
-    - [Updating the Worker](#updating-the-worker)
-    - [Updating the Runtime](#updating-the-runtime)
-  - [Custom Models](#custom-models)
-  - [Docker](#docker)
-  - [Support \& Troubleshooting](#support--troubleshooting)
-  - [Model Usage \& Licenses](#model-usage--licenses)
+---
 
-## Before You Begin
+## Key Features
 
-Before installing the worker:
+- **Multi-process architecture.** A process manager coordinates separate inference and safety processes, so one failure never brings down the whole worker.
+- **Broad model support.** Works with SD 1.5, SD 2.x, SDXL, Stable Cascade, and Flux (schnell), plus LoRAs, ControlNet, and post-processing.
+- **Built-in safety checks.** A dedicated safety process scans every generated image before upload, on either the GPU or the CPU.
+- **Job batching and queueing.** Configurable queue size, thread count, and batch limits get the most throughput out of your hardware.
+- **Smart VRAM management.** High-, moderate-, and low-memory modes, optional model unloading, and preload timeouts keep models running on 8 GB to 48 GB+ GPUs.
+- **Cross-platform.** Runs on Windows and Linux with NVIDIA CUDA, plus experimental AMD ROCm and DirectML support.
+- **Custom models.** Serve your own `.safetensors` checkpoints (requires approval on the network).
+- **Self-contained runtime.** The setup scripts install an isolated Python environment through micromamba, so there's no system-wide setup.
+- **Docker support** for CUDA and ROCm, with Compose files.
+- **Detailed logging.** Each process writes its own logs, plus separate trace logs for errors.
 
-1. Register an account on the [AI Horde website](https://aihorde.net/register).
-2. Securely store the API key you receive. **Treat this key like a password**.
+---
 
+## How It Works
+
+```text
+                 ┌──────────────────────────────────────────────┐
+                 │                 Process Manager              │
+ AI Horde API ◄──┤  pops jobs · tracks kudos · manages queue    │
+   (jobs)        │  loads models · submits results              │
+                 └───────┬──────────────────────┬───────────────┘
+                         │                      │
+                ┌────────▼────────┐    ┌────────▼────────┐
+                │   Inference     │    │     Safety      │
+                │   process(es)   │───►│     process     │
+                │  (horde-engine) │    │ (horde-safety)  │
+                └─────────────────┘    └────────┬────────┘
+                                                │ approved image
+                                                ▼
+                                       Upload to AI Horde → kudos
+```
+
+1. The **process manager** asks the AI Horde API for jobs that match your configured models and limits.
+2. An **inference process** loads the requested model and generates the image.
+3. The **safety process** checks the output before it leaves your machine.
+4. The result is **submitted** to the network, and your worker earns kudos.
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Language | Python 3.10+ |
+| Deep learning | PyTorch 2.9 (CUDA, ROCm, DirectML) |
+| Inference engine | `horde-engine` (ComfyUI-based pipelines) |
+| API client | `horde-sdk` |
+| Safety | `horde-safety` |
+| Model catalog | `horde-model-reference` |
+| Config and validation | Pydantic, ruamel.yaml, python-dotenv |
+| Runtime | micromamba (isolated environment) |
+| Containers | Docker, Docker Compose |
+| Tooling | pytest, mypy, Ruff, Black, pre-commit |
+
+---
+
+## Requirements
+
+| | Minimum | Recommended |
+|---|---|---|
+| GPU | NVIDIA with 8 GB VRAM | 12–24 GB+ VRAM |
+| System RAM | 16 GB | 32 GB+ (48 GB+ for Flux or Cascade) |
+| Storage | SSD | NVMe SSD with plenty of free space for models |
+| Swap | 8 GB | 16 GB+ |
+| OS | Windows 10/11 or Linux | Linux for AMD |
+
+You also need a free **AI Horde account and API key**. Register at [aihorde.net/register](https://aihorde.net/register) and keep the key private, like a password.
+
+---
 
 ## Installation
 
+> **Note:** Don't use spaces in the installation path. `C:\gridforge` works; `C:\My Workers` does not.
+
 ### Windows
 
-#### Option 1: Using Git (Recommended)
+```cmd
+cd C:\path\to\install\folder
+git clone https://github.com/zaynnmotiwala/gridforge.git
+cd gridforge
+```
 
-1. Install [git for Windows](https://gitforwindows.org/) if you haven't already.
-2. Open PowerShell or Command Prompt.
-3. Navigate to the folder where you want to install the worker:
-
-    > **Warning**: Do not use spaces in the installation path. For example, `C:\horde_worker` is good, while `C:\My Workers` is not.
-
-    ```cmd
-    cd C:\path\to\install\folder
-    ```
-
-4. Clone the repository:
-
-   ```cmd
-   git clone https://github.com/Haidra-Org/horde-worker-reGen.git
-   cd horde-worker-reGen
-   ```
-
-#### Option 2: Without Git
-
-1. Download the [zipped worker files](https://github.com/Haidra-Org/horde-worker-reGen/archive/refs/heads/main.zip).
-2. Extract to a folder of your choice.
+No Git? Download the repository as a ZIP from GitHub and extract it.
 
 ### Linux
 
-Open a terminal and run:
-
 ```bash
-git clone https://github.com/Haidra-Org/horde-worker-reGen.git
-cd horde-worker-reGen
+git clone https://github.com/zaynnmotiwala/gridforge.git
+cd gridforge
 ```
 
-### AMD GPUs
+### AMD GPUs (experimental, Linux only)
 
-AMD support is experimental, and **Linux-only** for now:
+Use `horde-bridge-rocm.sh` and `update-runtime-rocm.sh` instead of the standard scripts. See [README_advanced.md](README_advanced.md) for ROCm and WSL setup.
 
-- Use `horde-bridge-rocm.sh` and `update-runtime-rocm.sh` in place of the standard versions.
-- [WSL support](README_advanced.md#advanced-users-amd-rocm-inside-windows-wsl) is highly experimental.
-- Join the [AMD discussion on Discord](https://discord.com/channels/781145214752129095/1076124012305993768) if you're interested in trying.
+### DirectML (experimental)
 
-### DirectML
+Use `update-runtime-directml.cmd` and `horde-bridge-directml.cmd`. DirectML works but is much slower than CUDA or ROCm. See [README_advanced.md](README_advanced.md).
 
-**Experimental** Support for DirectML has been added. See [Running on DirectML](README_advanced.md#advanced-users-running-on-directml) for more information and further instructions. You can now follow this guide using  `update-runtime-directml.cmd` and `horde-bridge-directml.cmd` where appropriate. Please note that DirectML is several times slower than *ANY* other methods of running the worker.
+---
 
 ## Configuration
 
-### Basic Settings
+1. Copy the template:
 
-1. Copy `bridgeData_template.yaml` to `bridgeData.yaml`.
-2. Edit `bridgeData.yaml` following the instructions inside.
-3. Set a unique `dreamer_name`
-  - If the name is already taken, you'll get a "Wrong Credentials" error. The name must be unique across the entire horde network.
+   ```bash
+   cp bridgeData_template.yaml bridgeData.yaml      # Windows: copy bridgeData_template.yaml bridgeData.yaml
+   ```
 
-### Suggested Settings
+2. Open `bridgeData.yaml` and set at least these values:
 
-Tailor settings to your GPU, following these pointers:
+   | Setting | Description |
+   |---|---|
+   | `api_key` | Your AI Horde API key |
+   | `dreamer_name` | A unique name for your worker across the whole network (a taken name causes a "Wrong Credentials" error) |
+   | `models_to_load` | The models your worker will offer |
+   | `max_power` | The maximum image size and steps your worker accepts |
+   | `max_threads` | How many jobs run in parallel |
+   | `queue_size` | How many jobs to prefetch (uses system RAM) |
 
-- **24GB+ VRAM** (e.g. 3090, 4090):
+The template documents every other option in detail.
 
-  ```yaml
-  - queue_size: 1 # <32GB RAM: 0, 32GB: 1, >32GB: 2
-  - safety_on_gpu: true
-  - high_memory_mode: true
-  - high_performance_mode: true
-  - unload_models_from_vram_often: false
-  - max_threads: 1 # 2 is often viable for xx90 cards
-  - post_process_job_overlap: true
-  - queue_size: 2 # Set to 1 if max_threads: 2
-  - max_power: 64 # Reduce if max_threads: 2
-  - max_batch: 8 # Increase if max_threads: 1, decrease if max_threads: 2
-  - allow_sdxl_controlnet: true
-  ```
+> **Never commit `bridgeData.yaml`.** It contains your API key.
 
-- **12-16GB VRAM** (e.g. 3080 Ti, 4070 Ti, 4080):
+---
 
-  ```yaml
-  - queue_size: 1 # <32GB RAM: 0, 32GB: 1, >32GB: 2
-  - safety_on_gpu: true # Consider false if using Cascade/Flux
-  - moderate_performance_mode: true
-  - unload_models_from_vram_often: false
-  - max_threads: 1
-  - max_power: 50
-  - max_batch: 4 # Or higher
-  ```
+## Recommended Settings by GPU
 
-- **8-10GB VRAM** (e.g. 2080, 3060, 4060, 4060 Ti):
+**24 GB+ VRAM** (RTX 3090 / 4090)
 
-  ```yaml
-  - queue_size: 1 # <32GB RAM: 0, 32GB: 1, >32GB: 2
-  - safety_on_gpu: false
-  - max_threads: 1
-  - max_power: 32 # No higher
-  - max_batch: 4 # No higher
-  - allow_post_processing: false # If using SDXL/Flux, else can be true
-  - allow_sdxl_controlnet: false
-  ```
+```yaml
+queue_size: 1                 # <32GB RAM: 0 · 32GB: 1 · >32GB: 2
+safety_on_gpu: true
+high_memory_mode: true
+high_performance_mode: true
+unload_models_from_vram_often: false
+max_threads: 1                # 2 is often viable on xx90 cards
+post_process_job_overlap: true
+max_power: 64                 # lower if max_threads: 2
+max_batch: 8
+allow_sdxl_controlnet: true
+```
 
-  - Also minimize other VRAM-consuming apps while the worker runs.
+**12–16 GB VRAM** (RTX 3080 Ti / 4070 Ti / 4080)
 
-- **Lower-end GPUs / Under-performing Workers**:
-  - `extra_slow_worker: true` gives more time per job, but users must opt-in. Only use if <0.3 MPS/S or <3000 kudos/hr consistently with correct config.
-  - `limit_max_steps: true` caps total steps per job based on model.
-  - `preload_timeout: 120` allows longer model load times. Avoid misusing to prevent kudos loss or maintenance mode.
+```yaml
+queue_size: 1
+safety_on_gpu: true           # consider false with Cascade or Flux
+moderate_performance_mode: true
+unload_models_from_vram_often: false
+max_threads: 1
+max_power: 50
+max_batch: 4
+```
 
-- **Systems with less than 32GB of System RAM**:
-  - Be sure to only run SD15 models and queue_size: 0.
-    - Set `load_large_models: false`
-    - To your `models_to_skip` add `ALL SDXL`, `ALL SD21`, and the 'unpruned' models (see config) to prevent running out of memory
+**8–10 GB VRAM** (RTX 2080 / 3060 / 4060)
 
-### Important Notes
+```yaml
+queue_size: 1
+safety_on_gpu: false
+max_threads: 1
+max_power: 32                 # don't go higher
+max_batch: 4                  # don't go higher
+allow_post_processing: false  # can be true if you skip SDXL and Flux
+allow_sdxl_controlnet: false
+```
 
-- Use an SSD, especially for multiple models. HDDs should offer one model only, loading within 60s.
-- Configure 8GB (preferably 16GB+) of swap space, even on Linux.
-- Keep `threads` ≤2 unless using a 48GB+ VRAM data center GPU.
-- Worker RAM usage scales with `queue_size`. Use 1 for <32GB RAM, and optimize further for <16GB.
-- SDXL needs ~9GB free RAM consistently (32GB+ total recommended).
-- Flux and Stable Cascade need ~20GB free RAM consistently (48GB+ total recommended).
-- Disable sleep/power-saving modes while the worker runs.
+**Less than 32 GB of system RAM:** use `queue_size: 0` and `load_large_models: false`, and add `ALL SDXL` and `ALL SD21` to `models_to_skip`.
+
+**Slower GPUs:** `limit_max_steps: true` caps the steps per job, `preload_timeout: 120` allows slower model loads, and `extra_slow_worker: true` gives each job more time (users must opt in to slow workers).
+
+### Performance tips
+
+- Keep models on an **SSD**. On an HDD, offer only one model.
+- Keep `max_threads` at **2 or below** unless you have a 48 GB+ data-center GPU.
+- SDXL needs about **9 GB of free RAM**. Flux and Stable Cascade need about **20 GB**.
+- Turn off sleep and power-saving modes while the worker runs.
+
+---
 
 ## Running the Worker
 
-### Starting
+| Action | Windows | Linux |
+|---|---|---|
+| Start | `horde-bridge.cmd` | `./horde-bridge.sh` |
+| Start (AMD) | n/a | `./horde-bridge-rocm.sh` |
+| Stop | `Ctrl+C` (current jobs finish first) | `Ctrl+C` |
 
-> **Note**: The worker is resource-intensive. Avoid gaming or other heavy tasks while it runs. Turn it off or limit to small models at reduced settings if needed.
-
-1. Install the worker as described in the [Installation](#installation) section.
-2. Run `horde-bridge.cmd` (Windows) or `horde-bridge.sh` (Linux).
-   - **AMD**: Use `horde-bridge-rocm` versions.
-
-### Stopping
-
-- Press `Ctrl+C` in the worker's terminal.
-- It will finish current jobs before exiting.
+The first run installs the runtime and downloads your models, which can take a while.
 
 ### Monitoring
 
-Watch the terminal for progress, completed jobs, kudos earned, stats, and errors.
+The terminal shows live progress, completed jobs, kudos earned, and errors. Full logs are written to `logs/`:
 
-Detailed logs are in the `logs` directory:
-
-- `bridge*.log`: All info
-  - `bridge.log` is the main window
-  - `bridge_n.log` is process-specific (`n` is the process number)
-- `trace*.log`: Errors and warnings only
-  - `trace.log` is the main window
-  - `trace_n.log` is process-specific
+| File | Contents |
+|---|---|
+| `bridge.log` | All activity from the main process |
+| `bridge_<n>.log` | Activity from process `n` |
+| `trace.log`, `trace_<n>.log` | Errors and warnings only |
 
 ### Multiple GPUs
 
-> **Future versions won't need multiple worker instances**
-
-For now, start a separate worker per GPU.
-
-On Linux, specify the GPU for each instance:
+Run one worker instance per GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 ./horde-bridge.sh -n "Instance 1"
 CUDA_VISIBLE_DEVICES=1 ./horde-bridge.sh -n "Instance 2"
 ```
 
-**Warning**: High RAM (32-64GB+) is needed for multiple workers. `queue_size` and `max_threads` greatly impact RAM per worker.
+Each instance needs its own share of system RAM, so plan for 32–64 GB or more.
+
+---
 
 ## Updating
 
-The worker is constantly improving. Follow development and get update notifications in our [Discord](https://discord.gg/3DxrhksKzn).
-
-Script names below assume Windows (`.cmd`) and NVIDIA. For Linux use `.sh`, for AMD use `-rocm` versions.
-
-### Updating the Worker
-
 1. Stop the worker with `Ctrl+C`.
-2. Update the files:
-   - If you used `git clone`:
-     - Open a terminal in the worker folder
-     - Run `git pull`
-   - If you used the zip download:
-     - Delete the old `horde_worker_regen` folder
-     - Download the [latest zip](https://github.com/db0/horde-worker-reGen/archive/refs/heads/main.zip)
-     - Extract to the original location, overwriting existing files
-3. Continue with [Updating the Runtime](#updating-the-runtime) below.
+2. Pull the latest code:
 
-### Updating the Runtime
+   ```bash
+   git pull
+   ```
 
-> **Warning**: Some antivirus software (e.g. Avast) may interfere with the update. If you get `CRYPT_E_NO_REVOCATION_CHECK` errors, disable antivirus, retry, then re-enable.
+3. Update the runtime and dependencies:
 
-4. Run `update-runtime` for your OS to update dependencies.
-   - Not all updates require this, but run it if unsure
-   - **Advanced users**: see [README_advanced.md](README_advanced.md) for manual options
-5. [Start the worker](#starting) again
+   | OS / GPU | Script |
+   |---|---|
+   | Windows (NVIDIA) | `update-runtime.cmd` |
+   | Linux (NVIDIA) | `./update-runtime.sh` |
+   | Linux (AMD) | `./update-runtime-rocm.sh` |
+   | Windows (DirectML) | `update-runtime-directml.cmd` |
+
+4. Start the worker again.
+
+> Some antivirus tools (such as Avast) can block the update. If you see `CRYPT_E_NO_REVOCATION_CHECK`, pause the antivirus, run the update, then turn it back on.
+
+---
 
 ## Custom Models
 
-Serving custom models not in our reference requires the `customizer` role. Request it on Discord.
+Serving models that aren't in the official catalog requires the **customizer** role on the AI Horde. Once you have it, add the model to `bridgeData.yaml`:
 
-With the role:
+```yaml
+custom_models:
+  - name: My Custom Model
+    baseline: stable_diffusion_xl
+    filepath: /path/to/model.safetensors
 
-1. Download your model files locally.
-2. Reference them in `bridgeData.yaml`:
+models_to_load:
+  - My Custom Model
+```
 
-   ```yaml
-   custom_models:
-     - name: My Custom Model
-       baseline: stable_diffusion_xl
-       filepath: /path/to/model/file.safetensors
-   ```
+**Supported baselines:** `stable_diffusion_1`, `stable_diffusion_2_768`, `stable_diffusion_2_512`, `stable_diffusion_xl`, `stable_cascade`, `flux_1`
 
-   Currently supported baselines:
-    ```
-        stable_diffusion_1
-        stable_diffusion_2_768
-        stable_diffusion_2_512
-        stable_diffusion_xl
-        stable_cascade
-        flux_1
-    ```
-    > **Warning**: Flux.schnell series models are the only Flux models allowed; Flux.dev is *not* currently permitted. Do not attempt to offer Flux.dev, models derived from it, or models which contain data from it.
-    See [`STABLE_DIFFUSION_BASELINE_CATEGORY` in horde_model_reference](https://github.com/Haidra-Org/horde-model-reference/blob/main/horde_model_reference/meta_consts.py#L86) for an up to date list.
+Some rules:
+- Only **Flux.schnell**-based models are allowed. Flux.dev and its derivatives are not permitted.
+- Custom model names can't match existing catalog names, and they can't be explicit or vulgar.
+- Custom models are treated as SD 1.5 for kudos and safety checks.
+- When setup works, `custom_models.json` appears in the worker folder on startup.
 
-
-3. Add the model `name` to your `models_to_load` list.
-
-> Note: Do not use sexually explicit or excessively vulgar names for models.
-
-If set up correctly, `custom_models.json` will appear in the worker directory on startup.
-
-Notes:
-
-- Custom model names can't match our existing model names
-- The horde will treat them as SD 1.5 for kudos rewards and safety checks
+---
 
 ## Docker
 
-Docker images are at <https://hub.docker.com/r/tazlin/horde-worker-regen/tags>.
+Build and run with the included Dockerfiles and Compose files for **CUDA** and **ROCm**:
 
-Detailed guide: [Dockerfiles/README.md](Dockerfiles/README.md)
+```bash
+cd Dockerfiles
+docker compose -f compose.cuda.yaml up -d --build      # NVIDIA
+docker compose -f compose.rocm.yaml up -d --build      # AMD
+```
 
-Manual worker setup: [README_advanced.md](README_advanced.md)
+See [Dockerfiles/README.md](Dockerfiles/README.md) for build arguments, volumes, and GPU passthrough.
 
-## Support & Troubleshooting
+---
 
-Check the [#local-workers Discord channel](https://discord.com/channels/781145214752129095/1076124012305993768) for the latest info and community support.
+## Project Structure
 
-Common issues and fixes:
+```text
+├── horde_worker_regen/
+│   ├── process_management/
+│   │   ├── process_manager.py     # Core orchestrator: job pop, queue, submit, kudos
+│   │   ├── inference_process.py   # Image generation
+│   │   ├── safety_process.py      # Output safety checks
+│   │   ├── horde_process.py       # Shared base class for child processes
+│   │   └── messages.py            # Inter-process message types
+│   ├── bridge_data/               # Config loading and validation
+│   ├── download_models.py         # Model downloader
+│   ├── load_env_vars.py           # Environment-variable config
+│   └── run_worker.py              # Entry point
+├── Dockerfiles/                   # CUDA and ROCm images and Compose files
+├── tests/                         # pytest suite
+├── bridgeData_template.yaml       # Fully documented config template
+├── horde-bridge.* / update-runtime.*   # Start and update scripts (cmd and sh)
+└── README_advanced.md             # Manual setup, ROCm, WSL, DirectML
+```
 
-- **Download failures**: Check disk space and internet connection.
-- **Job timeouts**:
-  - Remove large models (Flux, Cascade, SDXL)
-  - Lower `max_power`
-  - Disable `allow_post_processing`, `allow_controlnet`, `allow_sdxl_controlnet`, and/or `allow_lora`
-- **Out of memory**: Decrease `max_threads`, `max_batch`, or `queue_size` to reduce VRAM/RAM use. Close other intensive programs.
-- **I have less kudos than I expect**: As a new user, 50% of your job reward kudos and 100% of uptime kudos are held in escrow until you become trusted after ~1 week of worker uptime. You'll then receive the escrowed kudos and earn full rewards immediately going forward.
-- **My worker is in [maintenance mode](https://github.com/Haidra-Org/haidra-assets/blob/main/docs/definitions.md#maintenance)**: You can log into [artbot here](https://tinybots.net/artbot/settings) and use the [manage workers](https://tinybots.net/artbot/settings?panel=workers) page **with the worker on** and click "unpause" to take your worker out of maintenance mode.
-  - **Note**: Workers are put into maintenance mode automatically by the server when the worker is failing to perform fast enough or if it is reporting that it failed too many jobs. You should investigate the [logs](logs/README.md) (search for "ERROR") to see what led to the issue. You can also [open an issue](https://github.com/Haidra-Org/horde-worker-reGen/issues) or ask in the [#local-workers channel](https://discord.com/channels/781145214752129095/1076124012305993768) in our [Discord](https://discord.gg/3DxrhksKzn).
+---
 
-[Open an issue](https://github.com/Haidra-Org/horde-worker-reGen/issues) to report bugs or request features. We appreciate your help!
+## Troubleshooting
 
-## Model Usage & Licenses
+| Problem | Fix |
+|---|---|
+| **Model download fails** | Check your free disk space and internet connection. |
+| **Jobs time out** | Remove large models (Flux, Cascade, SDXL), lower `max_power`, or turn off `allow_post_processing`, `allow_controlnet`, `allow_sdxl_controlnet`, or `allow_lora`. |
+| **Out of memory** | Lower `max_threads`, `max_batch`, or `queue_size`, and close other GPU-heavy apps. |
+| **"Wrong Credentials" error** | Your `dreamer_name` is already taken. Choose another name. |
+| **Fewer kudos than expected** | New workers have part of their kudos held for about a week until they become trusted. After that, you get the held kudos and full rewards. |
+| **Worker is in maintenance mode** | The server pauses workers that are too slow or fail too many jobs. Search `logs/` for `ERROR`, fix the cause, then unpause the worker from your AI Horde account settings. |
 
-Many bundled models use the [CreativeML OpenRAIL License](https://huggingface.co/spaces/CompVis/stable-diffusion-license). Please review it before use.
+To report a bug or request a feature, open an issue on this repository.
+
+---
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0**. See [LICENSE](LICENSE).
+
+It is a modified version of the open-source AI Horde reGen image worker, redistributed under the same license.
+
+Many supported models use the **CreativeML OpenRAIL** license. Check each model's license before you use it.
